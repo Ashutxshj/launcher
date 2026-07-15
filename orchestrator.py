@@ -1,0 +1,220 @@
+"""Per-button pipelines: run the tool, isolate this run's new leads, draft them
+with email-automation, and email the sheet to you.
+
+Nothing here contacts a lead. Scrapers/leeds run with --no-email (or never email),
+email-automation only ever drafts, and the single outbound email goes to you.
+"""
+
+import os
+import subprocess
+import sys
+
+import config
+import adapter
+import mailer
+import ratelimit
+
+sys.path.insert(0, config.EMAIL_AUTOMATION_DIR)
+import master_registry as mr   # email-automation's schema/identity helpers
+
+
+# --- xlsx helpers (header-name based, position independent) ------------------
+
+def _read_rows(path: str):
+    """(header, [row_dict, ...]). ([], []) if the file is absent."""
+    if not os.path.exists(path):
+        return [], []
+    from openpyxl import load_workbook
+    wb = load_workbook(path, read_only=True)
+    ws = wb.active
+    it = ws.iter_rows(values_only=True)
+    header = [str(h) for h in (next(it, None) or []) if h is not None]
+    rows = []
+    for values in it:
+        if not any(v is not None for v in values):
+            continue
+        rows.append({col: (values[i] if i < len(values) and values[i] is not None else "")
+                     for i, col in enumerate(header)})
+    wb.close()
+    return header, rows
+
+
+def _write_rows(path: str, header: list, rows: list):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Leads"
+    ws.append(header)
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+    wrap_cols = {mr.BULLETS_COLUMN, "Message"}
+    for row in rows:
+        ws.append([row.get(col, "") for col in header])
+        for col in wrap_cols:
+            if col in header:
+                ws.cell(row=ws.max_row, column=header.index(col) + 1).alignment = \
+                    Alignment(wrap_text=True, vertical="top")
+    wb.save(path)
+
+
+# --- subprocess runner -------------------------------------------------------
+
+def _run(python, args, cwd, env_extra, repo_hint, log, hits):
+    """Stream a subprocess, mirroring every line to the live log and scanning it
+    for rate-limit signals. Returns the exit code."""
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env.update(env_extra or {})
+
+    log(f"$ {os.path.basename(python)} {' '.join(args)}   (cwd={os.path.basename(cwd)})")
+    proc = subprocess.Popen(
+        [python] + args, cwd=cwd, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    )
+    for line in iter(proc.stdout.readline, ""):
+        line = line.rstrip("\n")
+        if line:
+            log(line)
+            for hit in ratelimit.detect(line, repo_hint):
+                sig = (hit["provider"], hit["env_path"], hit["env_key"])
+                if sig not in {(h["provider"], h["env_path"], h["env_key"]) for h in hits}:
+                    hits.append(hit)
+    proc.stdout.close()
+    return proc.wait()
+
+
+def _draft(temp_file, log, hits):
+    """Run email-automation --prep against temp_file (fills Message/Channel)."""
+    ea = config.EMAIL_AUTOMATION
+    code = _run(ea["python"], ea["args"], ea["cwd"],
+                {"MASTER_FILE": temp_file}, "email-automation", log, hits)
+    if code != 0:
+        log(f"[launcher] email-automation exited {code} (drafts may be partial)")
+
+
+def _mail(temp_file, label, count, drafted, log, hits):
+    subject = f"Chillispark leads, {label}: {count} new"
+    body = (
+        f"<p><b>{count}</b> new lead(s) from <b>{label}</b>, "
+        f"<b>{drafted}</b> with a ready cold-outreach draft in the Message column.</p>"
+        f"<p>Open the attached sheet, review each draft, then send by hand.</p>"
+    )
+    ok, status, detail = mailer.send(temp_file, subject, body)
+    log(f"[launcher] mail: {detail}")
+    if not ok:
+        for hit in ratelimit.detect(detail, "launcher"):
+            hits.append(hit)
+    return ok, detail
+
+
+# --- pipelines ---------------------------------------------------------------
+
+def _pipeline_scraper(button_id, btn, jobid, log, hits):
+    os.makedirs(config.OUT_DIR, exist_ok=True)
+    master_run = config.MASTER_FILE
+
+    _, before = _read_rows(master_run)
+    keys_before = set()
+    for r in before:
+        keys_before |= mr.identity_keys(r)
+    log(f"[launcher] master had {len(before)} leads before this run")
+
+    code = _run(btn["python"], btn["args"], btn["cwd"],
+                {"MASTER_FILE": master_run}, btn["env_repo"], log, hits)
+    log(f"[launcher] {btn['label']} exited {code}")
+
+    header, after = _read_rows(master_run)
+    new_rows = [r for r in after if not (mr.identity_keys(r) & keys_before)]
+    log(f"[launcher] {len(new_rows)} new lead(s) this run")
+    if not new_rows:
+        return {"count": 0, "drafted": 0, "mailed": False, "detail": "no new leads"}
+
+    temp = os.path.join(config.OUT_DIR, f"run_{button_id}_{jobid}.xlsx")
+    _write_rows(temp, header, new_rows)
+    _draft(temp, log, hits)
+
+    _, drafted_rows = _read_rows(temp)
+    drafted = sum(1 for r in drafted_rows if str(r.get("Message") or "").strip())
+    ok, detail = _mail(temp, btn["label"], len(new_rows), drafted, log, hits)
+    return {"count": len(new_rows), "drafted": drafted, "mailed": ok,
+            "detail": detail, "file": temp}
+
+
+def _pipeline_leeds(button_id, btn, jobid, log, hits):
+    os.makedirs(config.OUT_DIR, exist_ok=True)
+    source = btn["source_file"]
+
+    _, before = _read_rows(source)
+    before_links = {str(r.get("Permalink") or "").strip()
+                    for r in before if str(r.get("Permalink") or "").strip()}
+    log(f"[launcher] intent sheet had {len(before)} rows before this run")
+
+    code = _run(btn["python"], btn["args"], btn["cwd"], {}, btn["env_repo"], log, hits)
+    log(f"[launcher] {btn['label']} exited {code}")
+
+    _, after = _read_rows(source)
+    if before_links:
+        new_intent = [r for r in after
+                      if str(r.get("Permalink") or "").strip() not in before_links]
+    else:
+        new_intent = after   # first ever run — everything is new
+    log(f"[launcher] {len(new_intent)} new intent lead(s) this run")
+    if not new_intent:
+        return {"count": 0, "drafted": 0, "mailed": False, "detail": "no new leads"}
+
+    master_rows = adapter.convert(new_intent)
+    opener_map = {}
+    for m in master_rows:
+        for k in m.pop("_keys", set()):
+            opener_map[k] = m.get("_opener", "")
+        m.pop("_opener", None)
+
+    temp = os.path.join(config.OUT_DIR, f"run_{button_id}_{jobid}.xlsx")
+    _write_rows(temp, mr.COLUMNS, master_rows)
+    _draft(temp, log, hits)
+
+    # Fallback: where email-automation had no channel to draft, keep leeds' opener.
+    header, drafted_rows = _read_rows(temp)
+    filled = 0
+    for r in drafted_rows:
+        if not str(r.get("Message") or "").strip():
+            for k in mr.identity_keys(r):
+                if opener_map.get(k):
+                    r["Message"] = opener_map[k]
+                    filled += 1
+                    break
+    _write_rows(temp, header, drafted_rows)
+    drafted = sum(1 for r in drafted_rows if str(r.get("Message") or "").strip())
+    log(f"[launcher] drafts: {drafted} total ({filled} filled from leeds' opener)")
+
+    ok, detail = _mail(temp, btn["label"], len(new_intent), drafted, log, hits)
+    return {"count": len(new_intent), "drafted": drafted, "mailed": ok,
+            "detail": detail, "file": temp}
+
+
+def run(button_id: str, jobid: str, log):
+    """Entry point used by the server's background thread. Returns a result dict
+    including any rate-limit hits gathered along the way."""
+    btn = config.BUTTONS[button_id]
+    hits: list[dict] = []
+    log(f"[launcher] === {btn['label']} ({btn['subtitle']}) ===")
+    log(f"[launcher] recipient={config.RECIPIENT}")
+    try:
+        if btn["kind"] == "scraper":
+            result = _pipeline_scraper(button_id, btn, jobid, log, hits)
+        else:
+            result = _pipeline_leeds(button_id, btn, jobid, log, hits)
+        result["ok"] = True
+    except Exception as exc:
+        import traceback
+        log("[launcher] ERROR: " + "".join(traceback.format_exc()))
+        result = {"ok": False, "count": 0, "drafted": 0, "mailed": False,
+                  "detail": f"{type(exc).__name__}: {exc}"}
+    result["rate_limits"] = hits
+    result["label"] = btn["label"]
+    result["recipient"] = config.RECIPIENT
+    return result

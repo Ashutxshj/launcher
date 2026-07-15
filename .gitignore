@@ -1,0 +1,9 @@
+# Secrets — never commit.
+.env
+
+# Per-run temp sheets.
+out/
+
+# Python bytecode.
+__pycache__/
+*.pyc
