@@ -13,6 +13,7 @@ import config
 import adapter
 import mailer
 import ratelimit
+import sheet
 
 sys.path.insert(0, config.EMAIL_AUTOMATION_DIR)
 import master_registry as mr   # email-automation's schema/identity helpers
@@ -40,22 +41,9 @@ def _read_rows(path: str):
 
 
 def _write_rows(path: str, header: list, rows: list):
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Leads"
-    ws.append(header)
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-    wrap_cols = {mr.BULLETS_COLUMN, "Message"}
-    for row in rows:
-        ws.append([row.get(col, "") for col in header])
-        for col in wrap_cols:
-            if col in header:
-                ws.cell(row=ws.max_row, column=header.index(col) + 1).alignment = \
-                    Alignment(wrap_text=True, vertical="top")
-    wb.save(path)
+    """The emailed sheet. sheet.py owns every layout decision — Source Link in
+    column B, contact-order sort, widths — so this stays a one-liner."""
+    sheet.write(path, header, rows)
 
 
 # --- subprocess runner -------------------------------------------------------
@@ -101,6 +89,9 @@ def _mail(temp_file, label, count, drafted, log, hits):
     body = (
         f"<p><b>{count}</b> new lead(s) from <b>{label}</b>, "
         f"<b>{drafted}</b> with a ready cold-outreach draft in the Message column.</p>"
+        f"<p>Sorted by how easily you can reach them: direct email first, then "
+        f"Reddit, then phone numbers, then the rest. Column B links straight to "
+        f"the original post so you can check any lead yourself.</p>"
         f"<p>Open the attached sheet, review each draft, then send by hand.</p>"
     )
     ok, status, detail = mailer.send(temp_file, subject, body)
@@ -163,6 +154,11 @@ def _pipeline_leeds(button_id, btn, jobid, log, hits):
     else:
         new_intent = after   # first ever run — everything is new
     log(f"[launcher] {len(new_intent)} new intent lead(s) this run")
+
+    new_intent, foreign = adapter.contactable(new_intent)
+    if foreign:
+        log(f"[launcher] dropped {foreign} OSM business(es) outside India — "
+            f"no way to contact them")
     if not new_intent:
         return {"count": 0, "drafted": 0, "mailed": False, "detail": "no new leads"}
 
