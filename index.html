@@ -39,12 +39,18 @@
             background: var(--card); overflow: hidden; display: none; }
   .status.show { display: block; }
   .status .bar { padding: 13px 16px; display: flex; align-items: center; gap: 11px;
-                 border-bottom: 1px solid var(--line); font-size: 14px; }
+                 font-size: 14px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
          animation: pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+  .logtoggle { margin-left: auto; cursor: pointer; background: transparent;
+    border: 1px solid var(--line); color: var(--dim); border-radius: 7px;
+    padding: 5px 11px; font-size: 12px; transition: color .12s, border-color .12s; }
+  .logtoggle:hover { color: var(--text); border-color: #34363f; }
   .status pre { margin: 0; padding: 14px 16px; max-height: 300px; overflow: auto;
+    border-top: 1px solid var(--line);
     font: 12px/1.5 ui-monospace, Consolas, monospace; color: #a9afba; white-space: pre-wrap; }
+  .status pre.hidden { display: none; }
 
   #toasts { position: fixed; top: 16px; right: 16px; display: flex; flex-direction: column;
             gap: 8px; z-index: 50; width: min(92vw, 380px); }
@@ -69,8 +75,11 @@
     <div class="recipient">Sent to <b id="recipient"></b></div>
     <div class="grid" id="grid"></div>
     <section class="status" id="status">
-      <div class="bar"><span class="dot" id="dot"></span><span id="stitle">Working</span></div>
-      <pre id="log"></pre>
+      <div class="bar">
+        <span class="dot" id="dot"></span><span id="stitle">Working</span>
+        <button class="logtoggle" id="logtoggle">Show logs</button>
+      </div>
+      <pre id="log" class="hidden"></pre>
     </section>
   </div>
   <div id="toasts"></div>
@@ -81,7 +90,14 @@ const statusEl = document.getElementById('status');
 const logEl = document.getElementById('log');
 const stitle = document.getElementById('stitle');
 const dot = document.getElementById('dot');
+const logToggle = document.getElementById('logtoggle');
 let busy = false;
+
+logToggle.onclick = () => {
+  const hidden = logEl.classList.toggle('hidden');
+  logToggle.textContent = hidden ? 'Show logs' : 'Hide logs';
+  if (!hidden) logEl.scrollTop = logEl.scrollHeight;
+};
 
 function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 
@@ -135,7 +151,7 @@ async function poll(jobId, b) {
   catch (e) { setTimeout(() => poll(jobId, b), 2000); return; }
 
   logEl.textContent = (data.log || []).join('\n');
-  logEl.scrollTop = logEl.scrollHeight;
+  if (!logEl.classList.contains('hidden')) logEl.scrollTop = logEl.scrollHeight;
 
   if (data.running) { setTimeout(() => poll(jobId, b), 2000); return; }
 
