@@ -59,10 +59,40 @@ EMAIL_AUTOMATION = {
     "args": ["main.py", "--prep"],
 }
 
-# --- the 5 buttons ----------------------------------------------------------
+# --- dropdown option lists, read from the tool repos -------------------------
+
+def _list_from_config(repo: str, varname: str) -> list:
+    """A list-of-strings constant out of another repo's config.py, via ast —
+    no import, so the other config's side effects (dotenv loads, env mutation)
+    never run in the launcher process, and the module name can't collide with
+    this one. [] if the repo/constant is missing — the UI hides that card."""
+    import ast
+    path = os.path.join(ROOT, repo, "config.py")
+    if not os.path.exists(path):
+        return []
+    try:
+        tree = ast.parse(open(path, "r", encoding="utf-8").read())
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == varname
+                            for t in node.targets)):
+                value = ast.literal_eval(node.value)
+                return [str(v) for v in value] if isinstance(value, list) else []
+    except (OSError, SyntaxError, ValueError):
+        pass
+    return []
+
+
+NICHES = _list_from_config("Niche", "NICHES")
+SCRAPER3_CATEGORIES = _list_from_config("scraper3", "BUSINESS_CATEGORIES")
+
+# --- the 6 buttons ----------------------------------------------------------
 # kind: "scraper" -> appends to a master workbook; diff for new rows.
 #       "leeds"   -> writes an intent sheet; diff by Permalink, then adapt.
+#       "dm"      -> scraper3 DM mode; emails the 10-link sheet it wrote.
+#       "niche"   -> Niche tool; emails the one-liner sheet it wrote.
 # env_repo: which repo's .env holds the keys, for rate-limit toasts.
+# options: dropdown choices shown on the card; the pick arrives as params.choice.
 
 BUTTONS = {
     "1": {
@@ -85,12 +115,12 @@ BUTTONS = {
     },
     "3": {
         "label": "Social Media",
-        "subtitle": "Instagram-only NCR businesses",
-        "kind": "scraper",
+        "subtitle": "Pick a category — 10 Instagram-only businesses, DM links ready",
+        "kind": "dm",
         "python": _venv_python("scraper3"),
         "cwd": os.path.join(ROOT, "scraper3"),
-        "args": ["main.py", "--category", "0", "--no-email"],
         "env_repo": "scraper3",
+        "options": SCRAPER3_CATEGORIES,
     },
     "4": {
         "label": "Intented",
@@ -120,26 +150,6 @@ BUTTONS = {
         "python": _venv_python("Niche"),
         "cwd": os.path.join(ROOT, "Niche"),
         "env_repo": "Niche",
+        "options": NICHES,
     },
 }
-
-# --- the Niche dropdown ------------------------------------------------------
-
-def _load_niches() -> list:
-    """NICHES from Niche/config.py, loaded under a private module name so it
-    can't collide with this module (both are called `config`). [] if the Niche
-    repo is missing or broken — the UI then hides the dropdown card."""
-    import importlib.util
-    path = os.path.join(ROOT, "Niche", "config.py")
-    if not os.path.exists(path):
-        return []
-    try:
-        spec = importlib.util.spec_from_file_location("niche_config", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return list(getattr(mod, "NICHES", []))
-    except Exception:
-        return []
-
-
-NICHES = _load_niches()

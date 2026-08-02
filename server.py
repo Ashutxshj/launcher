@@ -74,11 +74,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/config":
             buttons = []
             for k, v in sorted(config.BUTTONS.items()):
-                if v["kind"] == "niche" and not config.NICHES:
-                    continue   # Niche repo missing/broken — hide the card
+                options = v.get("options")
+                if options is not None and not options:
+                    continue   # the tool repo is missing/broken — hide the card
                 b = {"id": k, "label": v["label"], "subtitle": v["subtitle"]}
-                if v["kind"] == "niche":
-                    b["niches"] = config.NICHES
+                if options:
+                    b["options"] = options
                 buttons.append(b)
             self._json(200, {"buttons": buttons, "recipient": config.RECIPIENT})
             return
@@ -115,13 +116,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(400, {"error": f"unknown button {button_id}"})
                 return
             params = self._body_json()
-            if config.BUTTONS[button_id]["kind"] == "niche":
-                niche = str(params.get("niche") or "").strip()
-                if not niche:
-                    self._json(400, {"error": "pick a niche first"})
+            options = config.BUTTONS[button_id].get("options")
+            if options is not None:
+                choice = str(params.get("choice") or "").strip()
+                if not choice:
+                    self._json(400, {"error": "pick an option from the dropdown first"})
                     return
-                if config.NICHES and niche not in config.NICHES:
-                    self._json(400, {"error": f"unknown niche '{niche}'"})
+                if choice not in options:
+                    self._json(400, {"error": f"unknown option '{choice}'"})
                     return
             with LOCK:
                 if CURRENT["id"] is not None:

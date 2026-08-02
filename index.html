@@ -119,15 +119,15 @@ async function load() {
   document.getElementById('recipient').textContent = cfg.recipient;
   grid.innerHTML = '';
   for (const b of cfg.buttons) {
-    // A <select> is not allowed inside a <button>, so the niche card is a div.
-    const el = document.createElement(b.niches ? 'div' : 'button');
+    // A <select> is not allowed inside a <button>, so dropdown cards are divs.
+    const el = document.createElement(b.options ? 'div' : 'button');
     el.className = 'card';
     el.innerHTML = `<div class="n">OPTION ${b.id}</div>` +
       `<div class="name">${esc(b.label)}</div><div class="desc">${esc(b.subtitle)}</div>`;
-    if (b.niches) {
+    if (b.options) {
       const sel = document.createElement('select');
-      sel.title = 'Which niche to scrape';
-      for (const n of b.niches) {
+      sel.title = 'What to target';
+      for (const n of b.options) {
         const o = document.createElement('option');
         o.value = n; o.textContent = n;
         sel.appendChild(o);
@@ -150,12 +150,12 @@ function setBusy(v) {
   });
 }
 
-async function run(b, niche) {
+async function run(b, choice) {
   if (busy) return;
   setBusy(true);
   statusEl.classList.add('show');
   dot.style.display = 'block';
-  const what = niche ? `${b.label} (${niche})` : b.label;
+  const what = choice ? `${b.label} (${choice})` : b.label;
   stitle.textContent = `Running ${what}. This can take a few minutes.`;
   logEl.textContent = '';
   let res;
@@ -163,7 +163,7 @@ async function run(b, niche) {
     res = await (await fetch('/run/' + b.id, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(niche ? {niche} : {}),
+      body: JSON.stringify(choice ? {choice} : {}),
     })).json();
   } catch (e) { toast('err', 'Could not start', e.message); setBusy(false); return; }
   if (res.error) { toast('err', 'Could not start', res.error); setBusy(false); return; }

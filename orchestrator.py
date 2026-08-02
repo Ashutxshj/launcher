@@ -196,6 +196,35 @@ def _pipeline_leeds(button_id, btn, jobid, log, hits):
             "detail": detail, "file": temp}
 
 
+def _pipeline_dm(button_id, btn, jobid, log, hits, category):
+    """Run scraper3's DM mode for one chosen category. scraper3 writes the
+    10-row sheet of clickable Instagram profile + ig.me DM links straight to
+    temp (and records the picks in the master so the next run is fresh); the
+    launcher only mails it. No drafting step — the sheet IS the work list."""
+    os.makedirs(config.OUT_DIR, exist_ok=True)
+    temp = os.path.join(config.OUT_DIR, f"run_{button_id}_{jobid}.xlsx")
+
+    args = ["main.py", "--category-name", category, "--dm-out", temp, "--no-email"]
+    code = _run(btn["python"], args, btn["cwd"], {}, btn["env_repo"], log, hits)
+    log(f"[launcher] {btn['label']} exited {code}")
+
+    _, rows = _read_rows(temp)
+    if not rows:
+        return {"count": 0, "drafted": 0, "mailed": False, "detail": "no new leads"}
+
+    label = f"{btn['label']} - {category}"
+    body = (
+        f"<p><b>{len(rows)}</b> Instagram-only <b>{category}</b> business(es), "
+        f"fresh this run.</p>"
+        f"<p>The DM column opens their Instagram chat directly (ig.me); the "
+        f"Profile column opens the account so you can vet it in ten seconds "
+        f"first. Send by hand, 10-20 a day, no links in the first message.</p>"
+    )
+    ok, detail = _mail(temp, label, len(rows), 0, log, hits, body=body)
+    return {"count": len(rows), "drafted": 0, "mailed": ok,
+            "detail": detail, "file": temp}
+
+
 def _pipeline_niche(button_id, btn, jobid, log, hits, niche):
     """Run the Niche tool for one chosen niche. Niche writes the finished sheet
     (one-liner Message included, its own seen.json dedup) straight to temp; the
@@ -234,13 +263,17 @@ def run(button_id: str, jobid: str, log, params=None):
     log(f"[launcher] === {btn['label']} ({btn['subtitle']}) ===")
     log(f"[launcher] recipient={config.RECIPIENT}")
     try:
+        choice = str((params or {}).get("choice") or "").strip()
         if btn["kind"] == "scraper":
             result = _pipeline_scraper(button_id, btn, jobid, log, hits)
+        elif btn["kind"] == "dm":
+            if not choice:
+                raise ValueError("no category selected")
+            result = _pipeline_dm(button_id, btn, jobid, log, hits, choice)
         elif btn["kind"] == "niche":
-            niche = str((params or {}).get("niche") or "").strip()
-            if not niche:
+            if not choice:
                 raise ValueError("no niche selected")
-            result = _pipeline_niche(button_id, btn, jobid, log, hits, niche)
+            result = _pipeline_niche(button_id, btn, jobid, log, hits, choice)
         else:
             result = _pipeline_leeds(button_id, btn, jobid, log, hits)
         result["ok"] = True
