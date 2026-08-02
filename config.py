@@ -115,7 +115,7 @@ BUTTONS = {
     },
     "3": {
         "label": "Social Media",
-        "subtitle": "Pick a category — 10 Instagram-only businesses, DM links ready",
+        "subtitle": "Pick a category, get 10 Instagram-only businesses with DM links",
         "kind": "dm",
         "python": _venv_python("scraper3"),
         "cwd": os.path.join(ROOT, "scraper3"),
@@ -145,7 +145,7 @@ BUTTONS = {
     },
     "6": {
         "label": "Niche",
-        "subtitle": "Pick one niche — its no-website businesses, one-line pitch each",
+        "subtitle": "Pick one niche, get its no-website businesses with a one-line pitch",
         "kind": "niche",
         "python": _venv_python("Niche"),
         "cwd": os.path.join(ROOT, "Niche"),
