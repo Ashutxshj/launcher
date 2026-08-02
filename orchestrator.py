@@ -84,9 +84,9 @@ def _draft(temp_file, log, hits):
         log(f"[launcher] email-automation exited {code} (drafts may be partial)")
 
 
-def _mail(temp_file, label, count, drafted, log, hits):
+def _mail(temp_file, label, count, drafted, log, hits, body=None):
     subject = f"Chillispark leads, {label}: {count} new"
-    body = (
+    body = body or (
         f"<p><b>{count}</b> new lead(s) from <b>{label}</b>, "
         f"<b>{drafted}</b> with a ready cold-outreach draft in the Message column.</p>"
         f"<p>Sorted by how easily you can reach them: direct email first, then "
@@ -128,7 +128,10 @@ def _pipeline_scraper(button_id, btn, jobid, log, hits):
     _write_rows(temp, header, new_rows)
     _draft(temp, log, hits)
 
-    _, drafted_rows = _read_rows(temp)
+    # Final rewrite: drop the state/noise columns the reader never uses. Must
+    # happen AFTER drafting — email-automation still reads some of them.
+    header, drafted_rows = _read_rows(temp)
+    _write_rows(temp, sheet.final_header(header), drafted_rows)
     drafted = sum(1 for r in drafted_rows if str(r.get("Message") or "").strip())
     ok, detail = _mail(temp, btn["label"], len(new_rows), drafted, log, hits)
     return {"count": len(new_rows), "drafted": drafted, "mailed": ok,
@@ -183,7 +186,8 @@ def _pipeline_leeds(button_id, btn, jobid, log, hits):
                     r["Message"] = opener_map[k]
                     filled += 1
                     break
-    _write_rows(temp, header, drafted_rows)
+    # This rewrite is also the final one, so the state/noise columns go here.
+    _write_rows(temp, sheet.final_header(header), drafted_rows)
     drafted = sum(1 for r in drafted_rows if str(r.get("Message") or "").strip())
     log(f"[launcher] drafts: {drafted} total ({filled} filled from leeds' opener)")
 
@@ -192,9 +196,39 @@ def _pipeline_leeds(button_id, btn, jobid, log, hits):
             "detail": detail, "file": temp}
 
 
-def run(button_id: str, jobid: str, log):
+def _pipeline_niche(button_id, btn, jobid, log, hits, niche):
+    """Run the Niche tool for one chosen niche. Niche writes the finished sheet
+    (one-liner Message included, its own seen.json dedup) straight to temp; the
+    launcher only mails it. No email-automation drafting step — the one-liner
+    is the message."""
+    os.makedirs(config.OUT_DIR, exist_ok=True)
+    temp = os.path.join(config.OUT_DIR, f"run_{button_id}_{jobid}.xlsx")
+
+    args = ["main.py", "--niche", niche, "--no-email", "--out", temp]
+    code = _run(btn["python"], args, btn["cwd"], {}, btn["env_repo"], log, hits)
+    log(f"[launcher] {btn['label']} exited {code}")
+
+    _, rows = _read_rows(temp)
+    if not rows:
+        return {"count": 0, "drafted": 0, "mailed": False, "detail": "no new leads"}
+
+    drafted = sum(1 for r in rows if str(r.get("Message") or "").strip())
+    label = f"{btn['label']} - {niche}"
+    body = (
+        f"<p><b>{len(rows)}</b> new <b>{niche}</b> business(es) with no website, "
+        f"each with a ready one-line pitch in the Message column.</p>"
+        f"<p>Sorted easiest-to-reach first; the WhatsApp column links straight "
+        f"to a chat. Copy the Message, send by hand.</p>"
+    )
+    ok, detail = _mail(temp, label, len(rows), drafted, log, hits, body=body)
+    return {"count": len(rows), "drafted": drafted, "mailed": ok,
+            "detail": detail, "file": temp}
+
+
+def run(button_id: str, jobid: str, log, params=None):
     """Entry point used by the server's background thread. Returns a result dict
-    including any rate-limit hits gathered along the way."""
+    including any rate-limit hits gathered along the way. `params` carries
+    per-run UI choices (today: the Niche button's selected niche)."""
     btn = config.BUTTONS[button_id]
     hits: list[dict] = []
     log(f"[launcher] === {btn['label']} ({btn['subtitle']}) ===")
@@ -202,6 +236,11 @@ def run(button_id: str, jobid: str, log):
     try:
         if btn["kind"] == "scraper":
             result = _pipeline_scraper(button_id, btn, jobid, log, hits)
+        elif btn["kind"] == "niche":
+            niche = str((params or {}).get("niche") or "").strip()
+            if not niche:
+                raise ValueError("no niche selected")
+            result = _pipeline_niche(button_id, btn, jobid, log, hits, niche)
         else:
             result = _pipeline_leeds(button_id, btn, jobid, log, hits)
         result["ok"] = True

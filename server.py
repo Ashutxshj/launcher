@@ -23,7 +23,7 @@ LOCK = threading.Lock()
 CURRENT = {"id": None}          # id of the running job, or None
 
 
-def _start_job(button_id: str):
+def _start_job(button_id: str, params: dict):
     jobid = uuid.uuid4().hex[:12]
     job = {"running": True, "button": button_id, "log": [], "result": None}
     JOBS[jobid] = job
@@ -33,7 +33,7 @@ def _start_job(button_id: str):
 
     def worker():
         try:
-            job["result"] = orchestrator.run(button_id, jobid, log)
+            job["result"] = orchestrator.run(button_id, jobid, log, params)
         except Exception as exc:  # last-resort guard; orchestrator handles its own
             job["result"] = {"ok": False, "detail": f"{type(exc).__name__}: {exc}",
                              "rate_limits": [], "count": 0, "drafted": 0,
@@ -72,8 +72,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/config":
-            buttons = [{"id": k, "label": v["label"], "subtitle": v["subtitle"]}
-                       for k, v in sorted(config.BUTTONS.items())]
+            buttons = []
+            for k, v in sorted(config.BUTTONS.items()):
+                if v["kind"] == "niche" and not config.NICHES:
+                    continue   # Niche repo missing/broken — hide the card
+                b = {"id": k, "label": v["label"], "subtitle": v["subtitle"]}
+                if v["kind"] == "niche":
+                    b["niches"] = config.NICHES
+                buttons.append(b)
             self._json(200, {"buttons": buttons, "recipient": config.RECIPIENT})
             return
 
@@ -89,17 +95,39 @@ class Handler(BaseHTTPRequestHandler):
 
         self._json(404, {"error": "not found"})
 
+    def _body_json(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if not length:
+            return {}
+        try:
+            data = json.loads(self.rfile.read(length))
+            return data if isinstance(data, dict) else {}
+        except (ValueError, OSError):
+            return {}
+
     def do_POST(self):
         if self.path.startswith("/run/"):
             button_id = self.path.rsplit("/", 1)[-1]
             if button_id not in config.BUTTONS:
                 self._json(400, {"error": f"unknown button {button_id}"})
                 return
+            params = self._body_json()
+            if config.BUTTONS[button_id]["kind"] == "niche":
+                niche = str(params.get("niche") or "").strip()
+                if not niche:
+                    self._json(400, {"error": "pick a niche first"})
+                    return
+                if config.NICHES and niche not in config.NICHES:
+                    self._json(400, {"error": f"unknown niche '{niche}'"})
+                    return
             with LOCK:
                 if CURRENT["id"] is not None:
                     self._json(409, {"error": "a run is already in progress"})
                     return
-                jobid = _start_job(button_id)
+                jobid = _start_job(button_id, params)
                 CURRENT["id"] = jobid
             self._json(200, {"job_id": jobid})
             return

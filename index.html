@@ -29,8 +29,11 @@
     border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 20px;
     display: flex; flex-direction: column; gap: 6px; transition: background .12s, border-color .12s;
   }
-  .card:hover:not(:disabled) { background: var(--card-h); border-color: #34363f; }
-  .card:disabled { opacity: .4; cursor: default; }
+  .card:hover:not(:disabled):not(.disabled) { background: var(--card-h); border-color: #34363f; }
+  .card:disabled, .card.disabled { opacity: .4; cursor: default; pointer-events: none; }
+  .card select { margin-top: 8px; width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+    font: inherit; font-size: 13px; cursor: pointer; }
   .card .n { font-size: 11px; color: var(--dim); letter-spacing: .8px; }
   .card .name { font-size: 17px; font-weight: 600; letter-spacing: -0.2px; }
   .card .desc { font-size: 13px; color: var(--dim); }
@@ -116,30 +119,52 @@ async function load() {
   document.getElementById('recipient').textContent = cfg.recipient;
   grid.innerHTML = '';
   for (const b of cfg.buttons) {
-    const el = document.createElement('button');
+    // A <select> is not allowed inside a <button>, so the niche card is a div.
+    const el = document.createElement(b.niches ? 'div' : 'button');
     el.className = 'card';
     el.innerHTML = `<div class="n">OPTION ${b.id}</div>` +
       `<div class="name">${esc(b.label)}</div><div class="desc">${esc(b.subtitle)}</div>`;
-    el.onclick = () => run(b);
+    if (b.niches) {
+      const sel = document.createElement('select');
+      sel.title = 'Which niche to scrape';
+      for (const n of b.niches) {
+        const o = document.createElement('option');
+        o.value = n; o.textContent = n;
+        sel.appendChild(o);
+      }
+      sel.onclick = e => e.stopPropagation();   // choosing must not start a run
+      el.appendChild(sel);
+      el.onclick = () => run(b, sel.value);
+    } else {
+      el.onclick = () => run(b);
+    }
     grid.appendChild(el);
   }
 }
 
 function setBusy(v) {
   busy = v;
-  document.querySelectorAll('.card').forEach(c => c.disabled = v);
+  document.querySelectorAll('.card').forEach(c => {
+    c.disabled = v;                      // real buttons
+    c.classList.toggle('disabled', v);   // the niche div card
+  });
 }
 
-async function run(b) {
+async function run(b, niche) {
   if (busy) return;
   setBusy(true);
   statusEl.classList.add('show');
   dot.style.display = 'block';
-  stitle.textContent = `Running ${b.label}. This can take a few minutes.`;
+  const what = niche ? `${b.label} (${niche})` : b.label;
+  stitle.textContent = `Running ${what}. This can take a few minutes.`;
   logEl.textContent = '';
   let res;
   try {
-    res = await (await fetch('/run/' + b.id, {method: 'POST'})).json();
+    res = await (await fetch('/run/' + b.id, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(niche ? {niche} : {}),
+    })).json();
   } catch (e) { toast('err', 'Could not start', e.message); setBusy(false); return; }
   if (res.error) { toast('err', 'Could not start', res.error); setBusy(false); return; }
   poll(res.job_id, b);

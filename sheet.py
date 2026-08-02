@@ -26,6 +26,21 @@ import re
 
 SOURCE_LINK_COLUMN = "Source Link"
 
+# Columns the EMAILED sheet must never carry. They exist in the master schema
+# as storage/state (dedup, opt-out flags, drafting inputs) and email-automation
+# still needs them while drafting, so they are stripped only by the final
+# rewrite that happens right before the sheet is mailed (orchestrator calls
+# final_header). The user reads none of them.
+DROP_COLUMNS = {
+    "Reached", "Do Not Contact", "Channel", "First Reported At",
+    "Lead Type", "Has_Website", "Rating", "Reviews",
+}
+
+
+def final_header(header: list) -> list:
+    """The stored header minus the columns the emailed sheet must not carry."""
+    return [c for c in header if c not in DROP_COLUMNS]
+
 # Ease of contact, best first. The sheet is sorted by these and nothing else
 # reorders it, so this tuple IS the priority you read top-down.
 TIER_EMAIL = 0     # a direct email address — just write to them

@@ -113,4 +113,33 @@ BUTTONS = {
         "source_file": HOUR_FILE,
         "env_repo": "leeds",
     },
+    "6": {
+        "label": "Niche",
+        "subtitle": "Pick one niche — its no-website businesses, one-line pitch each",
+        "kind": "niche",
+        "python": _venv_python("Niche"),
+        "cwd": os.path.join(ROOT, "Niche"),
+        "env_repo": "Niche",
+    },
 }
+
+# --- the Niche dropdown ------------------------------------------------------
+
+def _load_niches() -> list:
+    """NICHES from Niche/config.py, loaded under a private module name so it
+    can't collide with this module (both are called `config`). [] if the Niche
+    repo is missing or broken — the UI then hides the dropdown card."""
+    import importlib.util
+    path = os.path.join(ROOT, "Niche", "config.py")
+    if not os.path.exists(path):
+        return []
+    try:
+        spec = importlib.util.spec_from_file_location("niche_config", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return list(getattr(mod, "NICHES", []))
+    except Exception:
+        return []
+
+
+NICHES = _load_niches()
